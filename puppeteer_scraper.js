@@ -1,4 +1,5 @@
 const puppeteer = require('puppeteer');
+const fs = require('fs').promises;
 
 // Función de delay para esperar entre acciones
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -256,20 +257,16 @@ async function scrapeMax() {
     console.log('Productos encontrados en MAX:', products);
 }
 
-// Scraper para eBay (corregido)
+// Scraper para eBay (versión simple que funcionaba)
 async function scrapeEbay() {
     const productSelectors = {
-        title: '.s-item__title', // Selector corregido
-        price: '.s-item__price',
-        condition: '.s-item__subtitle',
-        shipping: '.s-item__shipping',
+        title: 'h3.s-item__title',
+        price: 'span.s-item__price',
+        condition: 'span.SECONDARY_INFO',
+        shipping: 'span.s-item__shipping.s-item__logisticsCost',
         link: {
-            selector: '.s-item__link',
+            selector: 'a.s-item__link',
             attr: 'href'
-        },
-        image: {
-            selector: '.s-item__image-img',
-            attr: 'src'
         }
     };
 
@@ -277,9 +274,12 @@ async function scrapeEbay() {
     const products = await puppeteerScraper(
         'https://www.ebay.com/sch/i.html?_nkw=laptop',
         productSelectors,
-        '.s-item'  // Selector del contenedor corregido
+        '.s-item__wrapper'
     );
     console.log('Productos encontrados en eBay:', products);
+    
+    // Exportar resultados a JSON
+    await exportResults(products, 'json', 'ebay_products');
 }
 
 // Scraper para MicroQuetzal
@@ -309,41 +309,124 @@ async function scrapeMicroQuetzal() {
     console.log('Productos encontrados en MicroQuetzal:', products);
 }
 
-// Scraper para Books.toscrape
-async function scrapeBooks() {
-    const bookSelectors = {
-        title: 'h3 a',
-        price: '.price_color',
-        availability: '.availability',
-        rating: '.star-rating',
-        image: {
-            selector: '.image_container img',
-            attr: 'src'
-        },
-        link: {
-            selector: 'h3 a',
-            attr: 'href'
-        }
-    };
-
-    console.log('Iniciando scraping de Books.toscrape...');
-    const books = await puppeteerScraper(
-        'http://books.toscrape.com/',
-        bookSelectors,
-        'article.product_pod'
-    );
-    console.log('Libros encontrados:', books);
+// 1. Scraping de múltiples páginas
+async function scrapeBooksMultiplePages(selectors, pages = 3) {
+    let allBooks = [];
+    
+    for (let i = 1; i <= pages; i++) {
+        console.log(`Scraping página ${i}...`);
+        const url = `http://books.toscrape.com/catalogue/page-${i}.html`;
+        
+        const books = await puppeteerScraper(
+            url,
+            selectors,
+            'article.product_pod'
+        );
+        
+        allBooks = [...allBooks, ...books];
+        await delay(2000);
+    }
+    
+    console.log(`Total de libros encontrados: ${allBooks.length}`);
+    return allBooks;
 }
 
-// Función principal modificada para ejecutar ambos scrapers
+// 2. Filtrado por categoría
+async function scrapeBooksByCategory(selectors, category) {
+    const categoryUrls = {
+        'science': 'http://books.toscrape.com/catalogue/category/books/science_22/index.html',
+        'fiction': 'http://books.toscrape.com/catalogue/category/books/fiction_10/index.html',
+        'mystery': 'http://books.toscrape.com/catalogue/category/books/mystery_3/index.html'
+        // Puedes añadir más categorías según necesites
+    };
+
+    const url = categoryUrls[category.toLowerCase()];
+    if (!url) {
+        throw new Error('Categoría no encontrada');
+    }
+
+    console.log(`Scraping categoría: ${category}`);
+    const books = await puppeteerScraper(
+        url,
+        selectors,
+        'article.product_pod'
+    );
+
+    return books;
+}
+
+// 3. Búsqueda de libros específicos
+async function searchBooks(searchTerm, books = null) {
+    if (!books) {
+        // Si no se proporcionan libros, hacer scraping de la primera página
+        books = await scrapeBooksMultiplePages({
+            title: 'h3 a',
+            price: '.price_color',
+            availability: '.availability',
+            rating: '.star-rating',
+            image: {
+                selector: '.image_container img',
+                attr: 'src'
+            },
+            link: {
+                selector: 'h3 a',
+                attr: 'href'
+            }
+        }, 1);
+    }
+
+    const searchResults = books.filter(book => {
+        const title = book.title?.toLowerCase() || '';
+        return title.includes(searchTerm.toLowerCase());
+    });
+
+    console.log(`Encontrados ${searchResults.length} libros con el término "${searchTerm}"`);
+    return searchResults;
+}
+
+// 4. Exportación a CSV/JSON
+async function exportResults(data, format = 'json', filename = 'books') {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    
+    try {
+        if (format === 'json') {
+            const jsonFilename = `${filename}_${timestamp}.json`;
+            await fs.writeFile(
+                jsonFilename,
+                JSON.stringify(data, null, 2),
+                'utf8'
+            );
+            console.log(`Datos exportados a ${jsonFilename}`);
+        } 
+        else if (format === 'csv') {
+            const csvFilename = `${filename}_${timestamp}.csv`;
+            
+            // Obtener headers del primer objeto
+            const headers = Object.keys(data[0]).join(',');
+            
+            // Convertir datos a formato CSV
+            const csvData = data.map(item => 
+                Object.values(item)
+                    .map(value => `"${value}"`)
+                    .join(',')
+            );
+            
+            // Combinar headers y datos
+            const csvContent = [headers, ...csvData].join('\n');
+            
+            await fs.writeFile(csvFilename, csvContent, 'utf8');
+            console.log(`Datos exportados a ${csvFilename}`);
+        }
+    } catch (error) {
+        console.error('Error exportando datos:', error);
+    }
+}
+
+// Función principal simplificada
 async function runScrapers() {
     try {
         console.log('Iniciando scraping...');
-        
         await scrapeEbay();
-        await delay(3000);
-        
-        await scrapeBooks();
     } catch (error) {
         console.error('Error ejecutando scrapers:', error);
     }
